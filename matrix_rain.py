@@ -146,8 +146,8 @@ class MatrixRain:
         """Return the curses attribute for a character based on how far it is
         from the stream head. Produces the classic bright-head → fade-out look."""
         if dist_from_head == 0:
-            # Head glyph: bright version of the chosen color
-            return curses.color_pair(color_pair) | curses.A_BOLD
+            # Head glyph: white flash
+            return curses.color_pair(self.color_pairs["white"]) | curses.A_BOLD
         frac = dist_from_head / max(1, trail_length)
         if frac < 0.2:
             return curses.color_pair(color_pair) | curses.A_BOLD

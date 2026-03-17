@@ -1,6 +1,6 @@
 # Matrix Digital Rain
 
-![Matrix Rain Demo](assets/matrix-rain.mp4)
+[![Watch the demo](./assets/thumbnail.png)](https://github.com/user-attachments/assets/0adf186a-7ae5-43f6-ba07-7b91a3a32b0e)
 
 A terminal-based Matrix digital rain effect written in Python using curses. Features falling columns of half-width Katakana, digits, Latin characters, and symbols with a white flash leading each column — just like the film.
 

@@ -6,8 +6,10 @@ Usage:
     python matrix_rain.py                    # interactive menu
     python matrix_rain.py --preset classic   # quick start with a preset
     python matrix_rain.py --speed 1.2 --density 0.8 --color cyan
+    python matrix_rain.py --message "WAKE UP"  # set reveal message
 
 Press 'q' or ESC to quit while running.
+Press 't' to trigger text reveal (requires --message).
 """
 
 import argparse
@@ -37,6 +39,68 @@ PRESETS = {
     "storm":   {"speed": 2.0, "density": 2.0, "color": "green", "rainbow": False, "fps": 30, "trail_min": 0.15, "trail_max": 0.7},
 }
 
+# ── Block Font (5 rows × 5 cols) ────────────────────────────────────────────
+# Each glyph is a list of 5 strings. '#' positions are suppressed in the rain
+# to form readable negative-space text.
+BLOCK_FONT = {
+    'A': [" ### ", "#   #", "#####", "#   #", "#   #"],
+    'B': ["#### ", "#   #", "#### ", "#   #", "#### "],
+    'C': [" ####", "#    ", "#    ", "#    ", " ####"],
+    'D': ["#### ", "#   #", "#   #", "#   #", "#### "],
+    'E': ["#####", "#    ", "###  ", "#    ", "#####"],
+    'F': ["#####", "#    ", "###  ", "#    ", "#    "],
+    'G': [" ### ", "#    ", "#  ##", "#   #", " ### "],
+    'H': ["#   #", "#   #", "#####", "#   #", "#   #"],
+    'I': ["#####", "  #  ", "  #  ", "  #  ", "#####"],
+    'J': ["  ###", "    #", "    #", "#   #", " ### "],
+    'K': ["#   #", "#  # ", "###  ", "#  # ", "#   #"],
+    'L': ["#    ", "#    ", "#    ", "#    ", "#####"],
+    'M': ["#   #", "## ##", "# # #", "#   #", "#   #"],
+    'N': ["#   #", "##  #", "# # #", "#  ##", "#   #"],
+    'O': [" ### ", "#   #", "#   #", "#   #", " ### "],
+    'P': ["#### ", "#   #", "#### ", "#    ", "#    "],
+    'Q': [" ### ", "#   #", "# # #", "#  # ", " ## #"],
+    'R': ["#### ", "#   #", "#### ", "#  # ", "#   #"],
+    'S': [" ####", "#    ", " ### ", "    #", "#### "],
+    'T': ["#####", "  #  ", "  #  ", "  #  ", "  #  "],
+    'U': ["#   #", "#   #", "#   #", "#   #", " ### "],
+    'V': ["#   #", "#   #", "#   #", " # # ", "  #  "],
+    'W': ["#   #", "#   #", "# # #", "## ##", "#   #"],
+    'X': ["#   #", " # # ", "  #  ", " # # ", "#   #"],
+    'Y': ["#   #", " # # ", "  #  ", "  #  ", "  #  "],
+    'Z': ["#####", "   # ", "  #  ", " #   ", "#####"],
+    '0': [" ### ", "#  ##", "# # #", "##  #", " ### "],
+    '1': ["  #  ", " ##  ", "  #  ", "  #  ", "#####"],
+    '2': [" ### ", "#   #", "  ## ", " #   ", "#####"],
+    '3': ["#### ", "    #", " ### ", "    #", "#### "],
+    '4': ["#   #", "#   #", "#####", "    #", "    #"],
+    '5': ["#####", "#    ", "#### ", "    #", "#### "],
+    '6': [" ### ", "#    ", "#### ", "#   #", " ### "],
+    '7': ["#####", "    #", "   # ", "  #  ", "  #  "],
+    '8': [" ### ", "#   #", " ### ", "#   #", " ### "],
+    '9': [" ### ", "#   #", " ####", "    #", " ### "],
+    ' ': ["     ", "     ", "     ", "     ", "     "],
+    '!': ["  #  ", "  #  ", "  #  ", "     ", "  #  "],
+    '.': ["     ", "     ", "     ", "     ", "  #  "],
+    ',': ["     ", "     ", "     ", "  #  ", " #   "],
+    '-': ["     ", "     ", " ### ", "     ", "     "],
+    '?': [" ### ", "#   #", "  ## ", "     ", "  #  "],
+    ':': ["     ", "  #  ", "     ", "  #  ", "     "],
+    "'": ["  #  ", " #   ", "     ", "     ", "     "],
+    '"': [" # # ", " # # ", "     ", "     ", "     "],
+    '/': ["    #", "   # ", "  #  ", " #   ", "#    "],
+    '_': ["     ", "     ", "     ", "     ", "#####"],
+}
+_FONT_H = 5
+_FONT_W = 5
+_FONT_GAP = 1
+
+# ── Text Reveal Timing ─────────────────────────────────────────────────────
+_REVEAL_SLOW_SECS = 0.6
+_REVEAL_HOLD_SECS = 10.0
+_REVEAL_FAST_SECS = 0.6
+_REVEAL_MIN_SPEED = 0.15
+
 
 # ── Stream ───────────────────────────────────────────────────────────────────
 class Stream:
@@ -55,8 +119,8 @@ class Stream:
         self.tick_acc = 0.0
         self.mutate_chance = 0.04
 
-    def update(self):
-        self.tick_acc += self.speed
+    def update(self, speed_scale: float = 1.0):
+        self.tick_acc += self.speed * speed_scale
         while self.tick_acc >= 1.0:
             self.tick_acc -= 1.0
             self.head += 1
@@ -84,6 +148,15 @@ class MatrixRain:
         self.frame_count = 0
         self._setup_curses()
         self._resize()
+
+        # Text reveal state
+        self.message = config.get("message", "")
+        self.reveal_state = "idle"
+        self.reveal_timer = 0.0
+        self.reveal_mask: set[tuple[int, int]] = set()
+        self.reveal_mask_order: list[tuple[int, int]] = []
+        self.reveal_fill_chars: dict[tuple[int, int], str] = {}
+        self.speed_multiplier = 1.0
 
     # ── Curses Setup ─────────────────────────────────────────────────────────
     def _setup_curses(self):
@@ -117,7 +190,7 @@ class MatrixRain:
     def _spawn_streams(self):
         density = self.config["density"]
         base_speed = self.config["speed"]
-        spawn_chance = density * 0.018
+        spawn_chance = density * 0.018 * self.speed_multiplier
 
         for col in range(self.cols):
             if random.random() >= spawn_chance:
@@ -161,19 +234,165 @@ class MatrixRain:
     def _draw(self):
         self.stdscr.erase()
         max_col = self.cols - 1  # avoid writing to bottom-right corner
+        mask = self._active_mask()
+        fade = self._non_mask_fade()
 
         for stream in self.streams:
             pair = self._get_color_pair(stream.col)
             for row, char in stream.chars.items():
                 if 0 <= row < self.rows and 0 <= stream.col < max_col:
-                    dist = stream.head - row
-                    attr = self._attr_for_position(dist, stream.trail_length, pair)
+                    in_mask = mask and (row, stream.col) in mask
+                    if mask and not in_mask:
+                        # Non-mask position: probabilistically suppress
+                        if hash((row, stream.col)) % 1000 / 1000.0 >= fade:
+                            continue
+                    if in_mask:
+                        # Consistent shade for text readability
+                        attr = curses.color_pair(pair) | curses.A_BOLD
+                    else:
+                        dist = stream.head - row
+                        attr = self._attr_for_position(dist, stream.trail_length, pair)
                     try:
                         self.stdscr.addstr(row, stream.col, char, attr)
                     except curses.error:
                         pass
 
+        # Fill text mask positions that have no stream char
+        if mask:
+            self._draw_mask_fill(max_col, mask)
+
         self.stdscr.refresh()
+
+    # ── Text Reveal ───────────────────────────────────────────────────────
+    def _start_reveal(self):
+        """Begin the slow-down → reveal → speed-up sequence."""
+        self.reveal_state = "slowing"
+        self.reveal_timer = 0.0
+        self.reveal_mask = self._compute_text_mask(self.message)
+        self.reveal_mask_order = list(self.reveal_mask)
+        random.shuffle(self.reveal_mask_order)
+        self.reveal_fill_chars = {pos: random.choice(CHARSET)
+                                  for pos in self.reveal_mask}
+
+    def _update_reveal(self, dt: float):
+        """Advance the reveal state machine by *dt* seconds."""
+        if self.reveal_state == "idle":
+            return
+
+        self.reveal_timer += dt
+
+        if self.reveal_state == "slowing":
+            progress = min(1.0, self.reveal_timer / _REVEAL_SLOW_SECS)
+            self.speed_multiplier = 1.0 - progress * (1.0 - _REVEAL_MIN_SPEED)
+            if progress >= 1.0:
+                self.reveal_state = "hold"
+                self.reveal_timer = 0.0
+
+        elif self.reveal_state == "hold":
+            self.speed_multiplier = _REVEAL_MIN_SPEED
+            if self.reveal_timer >= _REVEAL_HOLD_SECS:
+                self.reveal_state = "speedup"
+                self.reveal_timer = 0.0
+
+        elif self.reveal_state == "speedup":
+            progress = min(1.0, self.reveal_timer / _REVEAL_FAST_SECS)
+            self.speed_multiplier = _REVEAL_MIN_SPEED + progress * (1.0 - _REVEAL_MIN_SPEED)
+            if progress >= 1.0:
+                self.reveal_state = "idle"
+                self.reveal_mask = set()
+                self.reveal_mask_order = []
+                self.reveal_fill_chars = {}
+                self.speed_multiplier = 1.0
+
+        # Mutate fill characters for rain-like flicker in the text
+        for pos in self.reveal_fill_chars:
+            if random.random() < 0.04:
+                self.reveal_fill_chars[pos] = random.choice(CHARSET)
+
+    def _active_mask(self) -> set[tuple[int, int]]:
+        """Return the set of (row, col) positions to suppress for text reveal."""
+        if self.reveal_state == "idle" or not self.reveal_mask_order:
+            return set()
+
+        if self.reveal_state == "hold":
+            return self.reveal_mask
+
+        if self.reveal_state == "slowing":
+            # Fade in: no mask for first 30%, then grow over remaining 70%
+            progress = self.reveal_timer / _REVEAL_SLOW_SECS
+            if progress < 0.3:
+                return set()
+            fade = (progress - 0.3) / 0.7
+            count = int(len(self.reveal_mask_order) * fade)
+            return set(self.reveal_mask_order[:count])
+
+        if self.reveal_state == "speedup":
+            # Fade out: shrink mask over first 50%, then gone
+            progress = self.reveal_timer / _REVEAL_FAST_SECS
+            if progress > 0.5:
+                return set()
+            fade = 1.0 - progress / 0.5
+            count = int(len(self.reveal_mask_order) * fade)
+            return set(self.reveal_mask_order[:count])
+
+        return set()
+
+    def _compute_text_mask(self, message: str) -> set[tuple[int, int]]:
+        """Build a set of (row, col) positions for the block-font rendering
+        of *message*, centred on the screen."""
+        message = message.upper()
+        total_w = len(message) * (_FONT_W + _FONT_GAP) - _FONT_GAP
+        start_col = max(0, (self.cols - total_w) // 2)
+        start_row = max(0, (self.rows - _FONT_H) // 2)
+
+        mask: set[tuple[int, int]] = set()
+        col = start_col
+        for ch in message:
+            glyph = BLOCK_FONT.get(ch, BLOCK_FONT.get(' '))
+            if glyph:
+                for r, row_str in enumerate(glyph):
+                    for c, pixel in enumerate(row_str):
+                        if pixel != ' ':
+                            pr, pc = start_row + r, col + c
+                            if 0 <= pr < self.rows and 0 <= pc < self.cols:
+                                mask.add((pr, pc))
+            col += _FONT_W + _FONT_GAP
+        return mask
+
+    def _non_mask_fade(self) -> float:
+        """Return opacity (0.0–1.0) for rain outside the text mask."""
+        if self.reveal_state == "idle":
+            return 1.0
+        if self.reveal_state == "hold":
+            return 0.0
+        if self.reveal_state == "slowing":
+            progress = self.reveal_timer / _REVEAL_SLOW_SECS
+            return max(0.0, 1.0 - progress / 0.7)
+        if self.reveal_state == "speedup":
+            progress = self.reveal_timer / _REVEAL_FAST_SECS
+            return min(1.0, progress / 0.7)
+        return 1.0
+
+    def _draw_mask_fill(self, max_col: int, mask: set[tuple[int, int]]):
+        """Draw rain characters at mask positions not covered by any stream,
+        ensuring the text shape is always fully visible."""
+        covered = set()
+        for stream in self.streams:
+            for row in stream.chars:
+                pos = (row, stream.col)
+                if pos in mask:
+                    covered.add(pos)
+
+        pair = self._get_color_pair(self.cols // 2)
+        attr = curses.color_pair(pair) | curses.A_BOLD
+        for pos in mask - covered:
+            if 0 <= pos[1] < max_col:
+                char = self.reveal_fill_chars.get(pos)
+                if char:
+                    try:
+                        self.stdscr.addstr(pos[0], pos[1], char, attr)
+                    except curses.error:
+                        pass
 
     # ── Main Loop ────────────────────────────────────────────────────────────
     def run(self):
@@ -195,13 +414,26 @@ class MatrixRain:
                     break
                 elif key == curses.KEY_RESIZE:
                     self._resize()
+                    if self.reveal_state != "idle":
+                        # Abort reveal on resize — mask positions are stale
+                        self.reveal_state = "idle"
+                        self.reveal_mask = set()
+                        self.reveal_mask_order = []
+                        self.reveal_fill_chars = {}
+                        self.speed_multiplier = 1.0
+                elif key in (ord("t"), ord("T")):
+                    if self.reveal_state == "idle" and self.message:
+                        self._start_reveal()
             except curses.error:
                 pass
+
+            # Reveal animation
+            self._update_reveal(frame_delay)
 
             # Update
             self._spawn_streams()
             for stream in self.streams:
-                stream.update()
+                stream.update(self.speed_multiplier)
             self.streams = [s for s in self.streams if not s.is_dead()]
             self.frame_count += 1
 
@@ -278,8 +510,14 @@ def interactive_menu() -> dict:
         config["color"] = ask_choice("Color", COLOR_NAMES, config["color"])
     config["rainbow"] = ask_bool("Rainbow mode", config.get("rainbow", False))
 
+    msg = input("  Reveal message (press 't' to show) []: ").strip()
+    if msg:
+        config["message"] = msg
+
     print()
     print("  Starting… press 'q' or ESC to quit.")
+    if config.get("message"):
+        print("  Press 't' to reveal your message.")
     print()
     time.sleep(0.8)
     return config
@@ -304,6 +542,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fps", type=int, default=None, help="frames per second (10 – 60, default 24)")
     p.add_argument("--trail-min", type=float, default=None, help="min trail length as fraction of screen height (default 0.25)")
     p.add_argument("--trail-max", type=float, default=None, help="max trail length as fraction of screen height (default 1.0)")
+    p.add_argument("--message", type=str, default=None, help="text to reveal when 't' is pressed (block-font negative space)")
     p.add_argument("--interactive", "-i", action="store_true", help="force interactive menu")
     return p.parse_args()
 
@@ -336,6 +575,8 @@ def config_from_args(args: argparse.Namespace) -> dict | None:
         base["trail_min"] = max(0.05, min(1.0, args.trail_min))
     if args.trail_max is not None:
         base["trail_max"] = max(0.1, min(2.0, args.trail_max))
+    if args.message is not None:
+        base["message"] = args.message
 
     return base
 

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from matrix_rain import (
+    BLOCK_FONT,
     CHARSET,
     COLOR_NAMES,
     KATAKANA,
@@ -18,6 +19,12 @@ from matrix_rain import (
     RAINBOW_SEQUENCE,
     MatrixRain,
     Stream,
+    _FONT_H,
+    _FONT_W,
+    _REVEAL_FAST_SECS,
+    _REVEAL_HOLD_SECS,
+    _REVEAL_MIN_SPEED,
+    _REVEAL_SLOW_SECS,
     config_from_args,
     parse_args,
 )
@@ -183,6 +190,27 @@ class TestStream:
         changed = sum(1 for r, c in s.chars.items() if c != "A")
         assert changed > 0
 
+    def test_speed_scale_slows_movement(self):
+        s = Stream(col=0, max_row=100, speed=1.0, trail_length=5)
+        s.head = 0
+        s.tick_acc = 0.0
+        s.mutate_chance = 0
+        initial_head = s.head
+        s.update(speed_scale=0.5)
+        # speed 1.0 * scale 0.5 = 0.5 effective → tick_acc 0.5, no advance
+        assert s.head == initial_head
+        s.update(speed_scale=0.5)
+        # tick_acc now 1.0, head advances
+        assert s.head == initial_head + 1
+
+    def test_speed_scale_default_is_normal(self):
+        s = Stream(col=0, max_row=100, speed=1.0, trail_length=5)
+        s.head = 0
+        s.tick_acc = 0.0
+        s.mutate_chance = 0
+        s.update()  # default speed_scale=1.0
+        assert s.head == 1
+
     def test_zero_mutation_preserves_existing_chars(self):
         s = Stream(col=0, max_row=100, speed=1.0, trail_length=20)
         s.head = 5
@@ -211,6 +239,7 @@ class TestConfigFromArgs:
             "fps": None,
             "trail_min": None,
             "trail_max": None,
+            "message": None,
             "interactive": False,
         }
         defaults.update(kwargs)
@@ -286,6 +315,14 @@ class TestConfigFromArgs:
         config = config_from_args(self._ns(trail_max=10.0))
         assert config["trail_max"] == 2.0
 
+    def test_message_override(self):
+        config = config_from_args(self._ns(preset="classic", message="HELLO"))
+        assert config["message"] == "HELLO"
+
+    def test_message_not_set_without_flag(self):
+        config = config_from_args(self._ns(preset="classic"))
+        assert "message" not in config
+
     def test_unknown_preset_uses_classic(self):
         # config_from_args uses PRESETS.get(args.preset, PRESETS["classic"])
         config = config_from_args(self._ns(preset=None, speed=1.0))
@@ -337,6 +374,16 @@ class TestParseArgs:
         with patch("sys.argv", ["matrix_rain.py", "--preset", "nonexistent"]):
             with pytest.raises(SystemExit):
                 parse_args()
+
+    def test_message_arg(self):
+        with patch("sys.argv", ["matrix_rain.py", "--message", "HELLO WORLD"]):
+            args = parse_args()
+        assert args.message == "HELLO WORLD"
+
+    def test_message_default_none(self):
+        with patch("sys.argv", ["matrix_rain.py"]):
+            args = parse_args()
+        assert args.message is None
 
     def test_invalid_color_exits(self):
         with patch("sys.argv", ["matrix_rain.py", "--color", "pink"]):
@@ -540,3 +587,252 @@ class TestCaffeinate:
         # Should not raise
         cli_entry()
         mock_wrapper.assert_called_once()
+
+
+# ── Block Font ──────────────────────────────────────────────────────────────
+
+
+class TestBlockFont:
+    def test_all_glyphs_have_correct_height(self):
+        for ch, rows in BLOCK_FONT.items():
+            assert len(rows) == _FONT_H, f"Glyph '{ch}' has {len(rows)} rows, expected {_FONT_H}"
+
+    def test_all_glyphs_have_correct_width(self):
+        for ch, rows in BLOCK_FONT.items():
+            for i, row in enumerate(rows):
+                assert len(row) == _FONT_W, (
+                    f"Glyph '{ch}' row {i} has width {len(row)}, expected {_FONT_W}"
+                )
+
+    def test_glyphs_only_contain_hash_and_space(self):
+        for ch, rows in BLOCK_FONT.items():
+            for row in rows:
+                assert all(c in ('#', ' ') for c in row), f"Glyph '{ch}' has invalid chars"
+
+    def test_az_coverage(self):
+        for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            assert c in BLOCK_FONT, f"Missing glyph for '{c}'"
+
+    def test_digit_coverage(self):
+        for c in "0123456789":
+            assert c in BLOCK_FONT, f"Missing glyph for '{c}'"
+
+    def test_space_is_blank(self):
+        for row in BLOCK_FONT[' ']:
+            assert row == " " * _FONT_W
+
+
+# ── Text Reveal ─────────────────────────────────────────────────────────────
+
+
+class TestTextReveal:
+    def _make_rain(self, mock_curses, rows=40, cols=120, message="HI"):
+        stdscr = _make_mock_stdscr(rows, cols)
+        config = dict(PRESETS["classic"])
+        config["message"] = message
+        return MatrixRain(stdscr, config)
+
+    def test_init_reveal_state(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        assert rain.reveal_state == "idle"
+        assert rain.speed_multiplier == 1.0
+        assert rain.reveal_mask == set()
+        assert rain.message == "HI"
+
+    def test_start_reveal(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        rain._start_reveal()
+        assert rain.reveal_state == "slowing"
+        assert rain.reveal_timer == 0.0
+        assert len(rain.reveal_mask) > 0
+        assert len(rain.reveal_mask_order) == len(rain.reveal_mask)
+
+    def test_compute_text_mask_centered(self, mock_curses):
+        rain = self._make_rain(mock_curses, rows=40, cols=120, message="A")
+        mask = rain._compute_text_mask("A")
+        # Should be centred: start_col ≈ (120 - 5) // 2 = 57, start_row ≈ (40 - 5) // 2 = 17
+        rows_in_mask = {r for r, c in mask}
+        cols_in_mask = {c for r, c in mask}
+        assert min(rows_in_mask) == 17
+        assert min(cols_in_mask) >= 57
+
+    def test_compute_text_mask_clips_to_screen(self, mock_curses):
+        # Very long message on a small screen — should not go out of bounds
+        rain = self._make_rain(mock_curses, rows=10, cols=20, message="ABCDEFGHIJ")
+        mask = rain._compute_text_mask("ABCDEFGHIJ")
+        for r, c in mask:
+            assert 0 <= r < 10
+            assert 0 <= c < 20
+
+    def test_compute_text_mask_empty_message(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        mask = rain._compute_text_mask("")
+        assert mask == set()
+
+    def test_unknown_char_treated_as_space(self, mock_curses):
+        rain = self._make_rain(mock_curses, message="~")
+        mask = rain._compute_text_mask("~")
+        # '~' is not in BLOCK_FONT, falls back to space (all blank)
+        assert mask == set()
+
+    def test_slowing_phase_transitions_to_hold(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        rain._start_reveal()
+        # Advance through the entire slowing phase
+        rain._update_reveal(_REVEAL_SLOW_SECS + 0.1)
+        assert rain.reveal_state == "hold"
+        assert rain.reveal_timer == 0.0
+        assert rain.speed_multiplier == pytest.approx(_REVEAL_MIN_SPEED, abs=0.01)
+
+    def test_hold_phase_transitions_to_speedup(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        rain._start_reveal()
+        rain._update_reveal(_REVEAL_SLOW_SECS + 0.1)  # → hold
+        rain._update_reveal(_REVEAL_HOLD_SECS + 0.1)  # → speedup
+        assert rain.reveal_state == "speedup"
+        assert rain.reveal_timer == 0.0
+
+    def test_speedup_phase_transitions_to_idle(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        rain._start_reveal()
+        rain._update_reveal(_REVEAL_SLOW_SECS + 0.1)  # → hold
+        rain._update_reveal(_REVEAL_HOLD_SECS + 0.1)  # → speedup
+        rain._update_reveal(_REVEAL_FAST_SECS + 0.1)  # → idle
+        assert rain.reveal_state == "idle"
+        assert rain.speed_multiplier == 1.0
+        assert rain.reveal_mask == set()
+
+    def test_speed_multiplier_decreases_during_slowing(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        rain._start_reveal()
+        rain._update_reveal(_REVEAL_SLOW_SECS * 0.5)
+        assert rain.speed_multiplier < 1.0
+        assert rain.speed_multiplier > _REVEAL_MIN_SPEED
+
+    def test_speed_multiplier_increases_during_speedup(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        rain._start_reveal()
+        rain._update_reveal(_REVEAL_SLOW_SECS + 0.1)  # → hold
+        rain._update_reveal(_REVEAL_HOLD_SECS + 0.1)  # → speedup
+        rain._update_reveal(_REVEAL_FAST_SECS * 0.5)
+        assert rain.speed_multiplier > _REVEAL_MIN_SPEED
+        assert rain.speed_multiplier < 1.0
+
+    def test_active_mask_empty_when_idle(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        assert rain._active_mask() == set()
+
+    def test_active_mask_full_during_hold(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        rain._start_reveal()
+        rain._update_reveal(_REVEAL_SLOW_SECS + 0.1)  # → hold
+        assert rain._active_mask() == rain.reveal_mask
+
+    def test_active_mask_grows_during_slowing(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        rain._start_reveal()
+        # Early in slowing (< 30%): no mask yet
+        rain._update_reveal(_REVEAL_SLOW_SECS * 0.2)
+        assert rain._active_mask() == set()
+        # Late in slowing: partial mask
+        rain.reveal_timer = _REVEAL_SLOW_SECS * 0.8
+        mask = rain._active_mask()
+        assert 0 < len(mask) < len(rain.reveal_mask)
+
+    def test_active_mask_shrinks_during_speedup(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        rain._start_reveal()
+        rain._update_reveal(_REVEAL_SLOW_SECS + 0.1)
+        rain._update_reveal(_REVEAL_HOLD_SECS + 0.1)
+        # Early speedup: partial mask
+        rain.reveal_timer = _REVEAL_FAST_SECS * 0.2
+        mask = rain._active_mask()
+        assert 0 < len(mask) < len(rain.reveal_mask)
+        # Late speedup (> 50%): no mask
+        rain.reveal_timer = _REVEAL_FAST_SECS * 0.6
+        assert rain._active_mask() == set()
+
+    def test_non_mask_fade_idle(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        assert rain._non_mask_fade() == 1.0
+
+    def test_non_mask_fade_hold(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        rain._start_reveal()
+        rain._update_reveal(_REVEAL_SLOW_SECS + 0.1)  # → hold
+        assert rain._non_mask_fade() == 0.0
+
+    def test_non_mask_fade_slowing(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        rain._start_reveal()
+        rain._update_reveal(_REVEAL_SLOW_SECS * 0.5)
+        fade = rain._non_mask_fade()
+        assert 0.0 < fade < 1.0
+
+    def test_non_mask_fade_speedup(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        rain._start_reveal()
+        rain._update_reveal(_REVEAL_SLOW_SECS + 0.1)
+        rain._update_reveal(_REVEAL_HOLD_SECS + 0.1)
+        rain._update_reveal(_REVEAL_FAST_SECS * 0.5)
+        fade = rain._non_mask_fade()
+        assert 0.0 < fade < 1.0
+
+    def test_draw_only_mask_during_hold(self, mock_curses):
+        rain = self._make_rain(mock_curses, rows=24, cols=80)
+        rain._start_reveal()
+        rain._update_reveal(_REVEAL_SLOW_SECS + 0.1)  # → hold, full mask
+        # Add a stream with chars at a NON-mask position
+        # Find a col not in the mask
+        mask_cols = {c for _, c in rain.reveal_mask}
+        free_col = next(c for c in range(78) if c not in mask_cols)
+        s = Stream(free_col, 24, 1.0, 10)
+        s.head = 5
+        s.chars = {r: "A" for r in range(6)}
+        rain.streams.append(s)
+        rain._draw()
+        # During hold, non_mask_fade=0 → non-mask chars should be suppressed
+        for call in rain.stdscr.addstr.call_args_list:
+            row_arg, col_arg = call[0][0], call[0][1]
+            assert (row_arg, col_arg) in rain.reveal_mask
+
+    def test_fill_chars_generated(self, mock_curses):
+        rain = self._make_rain(mock_curses)
+        rain._start_reveal()
+        assert len(rain.reveal_fill_chars) == len(rain.reveal_mask)
+        for pos, char in rain.reveal_fill_chars.items():
+            assert pos in rain.reveal_mask
+            assert char in CHARSET
+
+    def test_fill_chars_mutate(self, mock_curses):
+        random.seed(0)
+        rain = self._make_rain(mock_curses, message="ABCDEF")
+        rain._start_reveal()
+        original = dict(rain.reveal_fill_chars)
+        # Run many update cycles to trigger mutations (4% chance each)
+        for _ in range(100):
+            rain._update_reveal(0.001)
+        changed = sum(1 for p in original if rain.reveal_fill_chars.get(p) != original[p])
+        assert changed > 0
+
+    def test_spawn_reduced_during_reveal(self, mock_curses):
+        random.seed(42)
+        rain = self._make_rain(mock_curses, rows=50, cols=100)
+        rain.speed_multiplier = 0.15
+        rain._spawn_streams()
+        slow_count = len(rain.streams)
+        # Reset and spawn at full speed
+        rain.streams = []
+        rain.speed_multiplier = 1.0
+        random.seed(42)
+        rain._spawn_streams()
+        full_count = len(rain.streams)
+        assert slow_count < full_count
+
+    def test_no_reveal_without_message(self, mock_curses):
+        stdscr = _make_mock_stdscr()
+        config = dict(PRESETS["classic"])  # no message key
+        rain = MatrixRain(stdscr, config)
+        assert rain.message == ""
+        # _start_reveal should not crash, but state should remain idle
+        # (the key handler checks for message before calling _start_reveal)

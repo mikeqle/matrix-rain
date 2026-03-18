@@ -5,6 +5,9 @@ description = "Matrix digital rain effect for the terminal"
 requires-python = ">=3.12"
 dependencies = []
 
+[dependency-groups]
+dev = ["pytest"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

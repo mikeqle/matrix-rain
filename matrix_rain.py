@@ -13,6 +13,7 @@ Press 'q' or ESC to quit while running.
 import argparse
 import curses
 import random
+import subprocess
 import sys
 import time
 
@@ -354,7 +355,23 @@ def cli_entry():
         if config is None:
             config = interactive_menu()
 
-        curses.wrapper(lambda stdscr: main(stdscr, config))
+        # Keep the machine awake while the rain is running (macOS).
+        caffeinate = None
+        try:
+            caffeinate = subprocess.Popen(
+                ["caffeinate", "-d"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            pass  # not on macOS — skip silently
+
+        try:
+            curses.wrapper(lambda stdscr: main(stdscr, config))
+        finally:
+            if caffeinate is not None:
+                caffeinate.terminate()
+                caffeinate.wait()
     except KeyboardInterrupt:
         print()  # clean newline after ^C
 

@@ -424,6 +424,15 @@ class MatrixRain:
                 elif key in (ord("t"), ord("T")):
                     if self.reveal_state == "idle" and self.message:
                         self._start_reveal()
+                    elif self.reveal_state in ("slowing", "hold"):
+                        self.reveal_state = "speedup"
+                        self.reveal_timer = 0.0
+                    elif self.reveal_state == "speedup":
+                        self.reveal_state = "idle"
+                        self.reveal_mask = set()
+                        self.reveal_mask_order = []
+                        self.reveal_fill_chars = {}
+                        self.speed_multiplier = 1.0
             except curses.error:
                 pass
 

@@ -347,46 +347,46 @@ class TestConfigFromArgs:
 
 class TestParseArgs:
     def test_no_args(self):
-        with patch("sys.argv", ["matrix_rain.py"]):
+        with patch("sys.argv", ["matrix_rain"]):
             args = parse_args()
         assert args.preset is None
         assert args.speed is None
         assert args.interactive is False
 
     def test_preset_arg(self):
-        with patch("sys.argv", ["matrix_rain.py", "--preset", "dense"]):
+        with patch("sys.argv", ["matrix_rain","--preset", "dense"]):
             args = parse_args()
         assert args.preset == "dense"
 
     def test_multiple_args(self):
-        with patch("sys.argv", ["matrix_rain.py", "--speed", "2.0", "--color", "cyan", "--rainbow"]):
+        with patch("sys.argv", ["matrix_rain","--speed", "2.0", "--color", "cyan", "--rainbow"]):
             args = parse_args()
         assert args.speed == 2.0
         assert args.color == "cyan"
         assert args.rainbow is True
 
     def test_interactive_short_flag(self):
-        with patch("sys.argv", ["matrix_rain.py", "-i"]):
+        with patch("sys.argv", ["matrix_rain","-i"]):
             args = parse_args()
         assert args.interactive is True
 
     def test_invalid_preset_exits(self):
-        with patch("sys.argv", ["matrix_rain.py", "--preset", "nonexistent"]):
+        with patch("sys.argv", ["matrix_rain","--preset", "nonexistent"]):
             with pytest.raises(SystemExit):
                 parse_args()
 
     def test_message_arg(self):
-        with patch("sys.argv", ["matrix_rain.py", "--message", "HELLO WORLD"]):
+        with patch("sys.argv", ["matrix_rain","--message", "HELLO WORLD"]):
             args = parse_args()
         assert args.message == "HELLO WORLD"
 
     def test_message_default_none(self):
-        with patch("sys.argv", ["matrix_rain.py"]):
+        with patch("sys.argv", ["matrix_rain"]):
             args = parse_args()
         assert args.message is None
 
     def test_invalid_color_exits(self):
-        with patch("sys.argv", ["matrix_rain.py", "--color", "pink"]):
+        with patch("sys.argv", ["matrix_rain","--color", "pink"]):
             with pytest.raises(SystemExit):
                 parse_args()
 
@@ -546,9 +546,9 @@ class TestMatrixRain:
 
 
 class TestCaffeinate:
-    @patch("matrix_rain.curses.wrapper")
-    @patch("matrix_rain.subprocess.Popen")
-    @patch("sys.argv", ["matrix_rain.py", "--preset", "classic"])
+    @patch("matrix_rain.cli.curses.wrapper")
+    @patch("matrix_rain.cli.subprocess.Popen")
+    @patch("sys.argv", ["matrix_rain", "--preset", "classic"])
     def test_caffeinate_started_and_stopped(self, mock_popen, mock_wrapper):
         mock_proc = MagicMock()
         mock_popen.return_value = mock_proc
@@ -564,9 +564,9 @@ class TestCaffeinate:
         mock_proc.terminate.assert_called_once()
         mock_proc.wait.assert_called_once()
 
-    @patch("matrix_rain.curses.wrapper", side_effect=Exception("boom"))
-    @patch("matrix_rain.subprocess.Popen")
-    @patch("sys.argv", ["matrix_rain.py", "--preset", "classic"])
+    @patch("matrix_rain.cli.curses.wrapper", side_effect=Exception("boom"))
+    @patch("matrix_rain.cli.subprocess.Popen")
+    @patch("sys.argv", ["matrix_rain", "--preset", "classic"])
     def test_caffeinate_stopped_on_exception(self, mock_popen, mock_wrapper):
         mock_proc = MagicMock()
         mock_popen.return_value = mock_proc
@@ -579,9 +579,9 @@ class TestCaffeinate:
         mock_proc.terminate.assert_called_once()
         mock_proc.wait.assert_called_once()
 
-    @patch("matrix_rain.curses.wrapper")
-    @patch("matrix_rain.subprocess.Popen", side_effect=FileNotFoundError)
-    @patch("sys.argv", ["matrix_rain.py", "--preset", "classic"])
+    @patch("matrix_rain.cli.curses.wrapper")
+    @patch("matrix_rain.cli.subprocess.Popen", side_effect=FileNotFoundError)
+    @patch("sys.argv", ["matrix_rain", "--preset", "classic"])
     def test_caffeinate_missing_is_ok(self, mock_popen, mock_wrapper):
         from matrix_rain import cli_entry
         # Should not raise

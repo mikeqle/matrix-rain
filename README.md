@@ -20,25 +20,31 @@ A terminal-based Matrix digital rain effect written in Python using curses. Feat
 ## Quick Start
 
 ```bash
-python matrix_rain.py
+python -m matrix_rain
 ```
 
 This opens an interactive menu where you can pick a preset or customize settings.
+
+You can also run it directly from anywhere without installing, using [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv run --directory /path/to/matrix-rain matrix-rain
+```
 
 ## CLI Usage
 
 ```bash
 # Run with a preset
-python matrix_rain.py --preset classic
+python -m matrix_rain --preset classic
 
 # Custom settings
-python matrix_rain.py --speed 1.5 --density 1.2 --color cyan
+python -m matrix_rain --speed 1.5 --density 1.2 --color cyan
 
 # Rainbow mode
-python matrix_rain.py --rainbow
+python -m matrix_rain --rainbow
 
 # Full control
-python matrix_rain.py --speed 2.0 --density 1.5 --fps 30 --trail-min 0.2 --trail-max 0.8 --color green
+python -m matrix_rain --speed 2.0 --density 1.5 --fps 30 --trail-min 0.2 --trail-max 0.8 --color green
 ```
 
 ### Options
@@ -53,6 +59,7 @@ python matrix_rain.py --speed 2.0 --density 1.5 --fps 30 --trail-min 0.2 --trail
 | `--fps`         | Frames per second (10 – 60)              | 24      |
 | `--trail-min`   | Min trail length (fraction of height)    | 0.25    |
 | `--trail-max`   | Max trail length (fraction of height)    | 1.0     |
+| `--message`     | Text to reveal when `t` is pressed       | —       |
 | `-i`            | Force interactive menu                   | —       |
 
 ### Presets
@@ -65,7 +72,7 @@ python matrix_rain.py --speed 2.0 --density 1.5 --fps 30 --trail-min 0.2 --trail
 | `rainbow` | 1.0   | 0.8     | 24  | Shifting rainbow colors      |
 | `storm`   | 2.0   | 2.0     | 30  | Fast and heavy               |
 
-Press **q** or **ESC** to quit while running.
+Press **q** or **ESC** to quit while running. Press **t** to trigger text reveal (requires `--message`).
 
 ## Installing to PATH
 
@@ -104,6 +111,19 @@ pipx install .
 ```
 
 This installs `matrix-rain` globally in its own isolated environment.
+
+## Project Structure
+
+```
+matrix_rain/
+├── __init__.py      # Public API and re-exports
+├── __main__.py      # python -m matrix_rain support
+├── cli.py           # Argument parsing and entry point
+├── constants.py     # Character sets, colors, presets, block font
+├── engine.py        # MatrixRain curses engine and text reveal
+├── menu.py          # Interactive terminal menu
+└── stream.py        # Stream class (single falling column)
+```
 
 ## Requirements
 

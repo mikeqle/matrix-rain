@@ -100,7 +100,7 @@ def cli_entry():
         args = parse_args()
 
         # --send mode: send a message to a running instance and exit
-        if args.send:
+        if args.send is not None:
             path = args.socket_path or default_socket_path()
             try:
                 send_message(args.send, path)
@@ -117,28 +117,28 @@ def cli_entry():
 
         # Keep the machine awake while the rain is running (macOS).
         caffeinate = None
-        try:
-            caffeinate = subprocess.Popen(
-                ["caffeinate", "-d"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except FileNotFoundError:
-            pass  # not on macOS — skip silently
-
-        # IPC listener
         listener = None
-        if not args.no_ipc:
-            try:
-                listener = MessageListener(args.socket_path)
-            except OSError as e:
-                if args.socket_path is not None:
-                    print(f"Error: cannot bind to {args.socket_path}: {e}",
-                          file=sys.stderr)
-                    sys.exit(1)
-                print(f"Warning: IPC disabled ({e})", file=sys.stderr)
-
         try:
+            try:
+                caffeinate = subprocess.Popen(
+                    ["caffeinate", "-d"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except FileNotFoundError:
+                pass  # not on macOS — skip silently
+
+            # IPC listener
+            if not args.no_ipc:
+                try:
+                    listener = MessageListener(args.socket_path)
+                except OSError as e:
+                    if args.socket_path is not None:
+                        print(f"Error: cannot bind to {args.socket_path}: {e}",
+                              file=sys.stderr)
+                        sys.exit(1)
+                    print(f"Warning: IPC disabled ({e})", file=sys.stderr)
+
             curses.wrapper(lambda stdscr: main(stdscr, config, listener))
         finally:
             if listener is not None:

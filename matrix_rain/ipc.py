@@ -2,6 +2,7 @@
 
 import os
 import socket
+import stat
 
 
 def default_socket_path() -> str:
@@ -20,6 +21,11 @@ class MessageListener:
     def _bind(self):
         # Clean up stale socket from a previous crash
         if os.path.exists(self.socket_path):
+            mode = os.stat(self.socket_path).st_mode
+            if not stat.S_ISSOCK(mode):
+                raise OSError(
+                    f"Path exists and is not a socket: {self.socket_path}"
+                )
             probe = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
             try:
                 probe.sendto(b"", self.socket_path)

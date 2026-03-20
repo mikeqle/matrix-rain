@@ -57,11 +57,15 @@ def config_from_args(args: argparse.Namespace) -> dict | None:
     if args.interactive:
         return None
 
-    # If no flags were given at all, fall back to interactive
-    has_flags = any(v is not None for k, v in vars(args).items()
-                    if k not in ("interactive", "no_ipc", "send", "socket_path"))
-    if not has_flags:
-        return None
+    # If no display flags were given, fall back to interactive — unless
+    # IPC-only flags are present, in which case use the classic preset.
+    ipc_only = ("interactive", "no_ipc", "send", "socket_path")
+    has_display_flags = any(v is not None for k, v in vars(args).items()
+                           if k not in ipc_only)
+    if not has_display_flags:
+        has_ipc_flags = args.no_ipc or args.socket_path is not None
+        if not has_ipc_flags:
+            return None
 
     base = dict(PRESETS.get(args.preset, PRESETS["classic"]))
 

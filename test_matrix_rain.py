@@ -245,6 +245,9 @@ class TestConfigFromArgs:
             "trail_max": None,
             "message": None,
             "interactive": False,
+            "send": None,
+            "socket_path": None,
+            "no_ipc": False,
         }
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
@@ -344,6 +347,21 @@ class TestConfigFromArgs:
         assert config["fps"] == 30
         # density should come from "slow" preset
         assert config["density"] == PRESETS["slow"]["density"]
+
+    def test_no_ipc_alone_returns_classic(self):
+        config = config_from_args(self._ns(no_ipc=True))
+        assert config is not None
+        assert config == dict(PRESETS["classic"])
+
+    def test_socket_path_alone_returns_classic(self):
+        config = config_from_args(self._ns(socket_path="/tmp/mr.sock"))
+        assert config is not None
+        assert config == dict(PRESETS["classic"])
+
+    def test_no_ipc_with_no_flags_returns_none(self):
+        """Bare invocation (no flags at all) still goes interactive."""
+        config = config_from_args(self._ns())
+        assert config is None
 
 
 # ── CLI Argument Parsing ─────────────────────────────────────────────────────
@@ -919,6 +937,16 @@ class TestMessageListener:
         listener = MessageListener(sock_path)
         listener.close()
         listener.close()  # should not raise
+
+    def test_refuses_non_socket_path(self, sock_path):
+        # Create a regular file at the path
+        with open(sock_path, "w") as f:
+            f.write("not a socket")
+        with pytest.raises(OSError, match="not a socket"):
+            MessageListener(sock_path)
+        # The regular file must not have been deleted
+        assert os.path.exists(sock_path)
+        os.unlink(sock_path)
 
 
 class TestSendMessage:

@@ -2,6 +2,7 @@
 
 import argparse
 import curses
+import os
 import random
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +19,7 @@ from matrix_rain import (
     PRESETS,
     RAINBOW_SEQUENCE,
     MatrixRain,
+    MessageListener,
     Stream,
     _FONT_H,
     _FONT_W,
@@ -26,7 +28,9 @@ from matrix_rain import (
     _REVEAL_MIN_SPEED,
     _REVEAL_SLOW_SECS,
     config_from_args,
+    default_socket_path,
     parse_args,
+    send_message,
 )
 
 
@@ -241,6 +245,9 @@ class TestConfigFromArgs:
             "trail_max": None,
             "message": None,
             "interactive": False,
+            "send": None,
+            "socket_path": None,
+            "no_ipc": False,
         }
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
@@ -340,6 +347,21 @@ class TestConfigFromArgs:
         assert config["fps"] == 30
         # density should come from "slow" preset
         assert config["density"] == PRESETS["slow"]["density"]
+
+    def test_no_ipc_alone_returns_classic(self):
+        config = config_from_args(self._ns(no_ipc=True))
+        assert config is not None
+        assert config == dict(PRESETS["classic"])
+
+    def test_socket_path_alone_returns_classic(self):
+        config = config_from_args(self._ns(socket_path="/tmp/mr.sock"))
+        assert config is not None
+        assert config == dict(PRESETS["classic"])
+
+    def test_bare_invocation_returns_none(self):
+        """Bare invocation (no flags at all) still goes interactive."""
+        config = config_from_args(self._ns())
+        assert config is None
 
 
 # ── CLI Argument Parsing ─────────────────────────────────────────────────────
@@ -836,3 +858,151 @@ class TestTextReveal:
         assert rain.message == ""
         # _start_reveal should not crash, but state should remain idle
         # (the key handler checks for message before calling _start_reveal)
+
+
+# ── IPC ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture()
+def sock_path():
+    """Short socket path under /tmp to stay within AF_UNIX length limit."""
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".sock", dir="/tmp", prefix="mr-test-")
+    os.close(fd)
+    os.unlink(path)  # we just need the name, not the file
+    yield path
+    # cleanup if test didn't
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+class TestDefaultSocketPath:
+    def test_contains_uid(self):
+        path = default_socket_path()
+        assert str(os.getuid()) in path
+        assert path.startswith("/tmp/matrix-rain-")
+        assert path.endswith(".sock")
+
+
+class TestMessageListener:
+    def test_bind_and_close(self, sock_path):
+        listener = MessageListener(sock_path)
+        assert os.path.exists(sock_path)
+        listener.close()
+        assert not os.path.exists(sock_path)
+
+    def test_poll_returns_none_when_empty(self, sock_path):
+        with MessageListener(sock_path) as listener:
+            assert listener.poll() is None
+
+    def test_send_and_receive(self, sock_path):
+        with MessageListener(sock_path) as listener:
+            send_message("HELLO", sock_path)
+            msg = listener.poll()
+            assert msg == "HELLO"
+
+    def test_multiple_messages(self, sock_path):
+        with MessageListener(sock_path) as listener:
+            send_message("FIRST", sock_path)
+            send_message("SECOND", sock_path)
+            assert listener.poll() == "FIRST"
+            assert listener.poll() == "SECOND"
+            assert listener.poll() is None
+
+    def test_empty_message_ignored(self, sock_path):
+        with MessageListener(sock_path) as listener:
+            send_message("", sock_path)
+            assert listener.poll() is None
+
+    def test_stale_socket_cleanup(self, sock_path):
+        # Create a stale socket file
+        import socket as sock_mod
+        stale = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_DGRAM)
+        stale.bind(sock_path)
+        stale.close()  # close without unlinking — simulates crash
+        # New listener should clean it up and bind successfully
+        with MessageListener(sock_path) as listener:
+            send_message("AFTER STALE", sock_path)
+            assert listener.poll() == "AFTER STALE"
+
+    def test_context_manager(self, sock_path):
+        with MessageListener(sock_path) as listener:
+            assert listener.poll() is None
+        assert not os.path.exists(sock_path)
+
+    def test_close_idempotent(self, sock_path):
+        listener = MessageListener(sock_path)
+        listener.close()
+        listener.close()  # should not raise
+
+    def test_refuses_non_socket_path(self, sock_path):
+        # Create a regular file at the path
+        with open(sock_path, "w") as f:
+            f.write("not a socket")
+        with pytest.raises(OSError, match="not a socket"):
+            MessageListener(sock_path)
+        # The regular file must not have been deleted
+        assert os.path.exists(sock_path)
+        os.unlink(sock_path)
+
+
+class TestSendMessage:
+    def test_send_to_missing_socket_raises(self):
+        path = "/tmp/mr-test-nonexistent.sock"
+        with pytest.raises(FileNotFoundError):
+            send_message("HELLO", path)
+
+
+class TestEngineIPC:
+    def test_engine_accepts_listener(self, mock_curses):
+        stdscr = _make_mock_stdscr()
+        config = dict(PRESETS["classic"])
+        listener = MagicMock()
+        listener.poll.return_value = None
+        rain = MatrixRain(stdscr, config, message_listener=listener)
+        assert rain.message_listener is listener
+
+    def test_engine_without_listener(self, mock_curses):
+        stdscr = _make_mock_stdscr()
+        config = dict(PRESETS["classic"])
+        rain = MatrixRain(stdscr, config)
+        assert rain.message_listener is None
+
+    def test_ipc_message_triggers_reveal(self, mock_curses):
+        stdscr = _make_mock_stdscr(rows=30, cols=80)
+        config = dict(PRESETS["classic"])
+        listener = MagicMock()
+        listener.poll.return_value = "HELLO"
+        rain = MatrixRain(stdscr, config, message_listener=listener)
+        assert rain.reveal_state == "idle"
+        # Simulate one iteration of the IPC check from _loop
+        incoming = rain.message_listener.poll()
+        if incoming is not None:
+            rain.message = incoming
+            rain.reveal_state = "idle"
+            rain.reveal_mask = set()
+            rain.reveal_mask_order = []
+            rain.reveal_fill_chars = {}
+            rain.speed_multiplier = 1.0
+            rain._start_reveal()
+        assert rain.message == "HELLO"
+        assert rain.reveal_state == "slowing"
+
+    def test_ipc_message_interrupts_active_reveal(self, mock_curses):
+        stdscr = _make_mock_stdscr(rows=30, cols=80)
+        config = dict(PRESETS["classic"], message="OLD")
+        rain = MatrixRain(stdscr, config)
+        rain._start_reveal()
+        assert rain.reveal_state == "slowing"
+        # Simulate IPC interrupt
+        rain.message = "NEW"
+        rain.reveal_state = "idle"
+        rain.reveal_mask = set()
+        rain.reveal_mask_order = []
+        rain.reveal_fill_chars = {}
+        rain.speed_multiplier = 1.0
+        rain._start_reveal()
+        assert rain.message == "NEW"
+        assert rain.reveal_state == "slowing"

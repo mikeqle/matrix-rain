@@ -18,9 +18,10 @@ from .stream import Stream
 
 
 class MatrixRain:
-    def __init__(self, stdscr, config: dict):
+    def __init__(self, stdscr, config: dict, message_listener=None):
         self.stdscr = stdscr
         self.config = config
+        self.message_listener = message_listener
         self.streams: list[Stream] = []
         self.color_pairs: dict[str, int] = {}
         self.frame_count = 0
@@ -284,6 +285,18 @@ class MatrixRain:
     def _loop(self, frame_delay: float):
         while True:
             t0 = time.monotonic()
+
+            # IPC input (non-blocking)
+            if self.message_listener:
+                incoming = self.message_listener.poll()
+                if incoming is not None:
+                    self.message = incoming
+                    self.reveal_state = "idle"
+                    self.reveal_mask = set()
+                    self.reveal_mask_order = []
+                    self.reveal_fill_chars = {}
+                    self.speed_multiplier = 1.0
+                    self._start_reveal()
 
             # Input
             try:

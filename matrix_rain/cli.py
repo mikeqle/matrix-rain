@@ -14,9 +14,11 @@ Press 't' to trigger text reveal (requires --message).
 import argparse
 import curses
 import subprocess
+import sys
 
 from .constants import COLOR_NAMES, PRESETS
 from .engine import MatrixRain
+from .ipc import MessageListener, default_socket_path, send_message
 from .menu import interactive_menu
 
 
@@ -40,6 +42,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--trail-max", type=float, default=None, help="max trail length as fraction of screen height (default 1.0)")
     p.add_argument("--message", type=str, default=None, help="text to reveal when 't' is pressed (block-font negative space)")
     p.add_argument("--interactive", "-i", action="store_true", help="force interactive menu")
+    p.add_argument("--send", type=str, default=None, metavar="TEXT",
+                   help="send a message to a running matrix-rain instance and exit")
+    p.add_argument("--socket-path", type=str, default=None,
+                   help=f"override IPC socket path (default: {default_socket_path()})")
+    p.add_argument("--no-ipc", action="store_true",
+                   help="disable the IPC listener")
     return p.parse_args()
 
 
@@ -77,8 +85,8 @@ def config_from_args(args: argparse.Namespace) -> dict | None:
     return base
 
 
-def main(stdscr, config: dict):
-    rain = MatrixRain(stdscr, config)
+def main(stdscr, config: dict, message_listener=None):
+    rain = MatrixRain(stdscr, config, message_listener)
     rain.run()
 
 
@@ -86,6 +94,18 @@ def cli_entry():
     """Entry point for both `python -m matrix_rain` and the `matrix-rain` console script."""
     try:
         args = parse_args()
+
+        # --send mode: send a message to a running instance and exit
+        if args.send:
+            path = args.socket_path or default_socket_path()
+            try:
+                send_message(args.send, path)
+            except (FileNotFoundError, ConnectionRefusedError, OSError) as e:
+                print(f"Error: could not reach matrix-rain at {path}: {e}",
+                      file=sys.stderr)
+                sys.exit(1)
+            return
+
         config = config_from_args(args)
 
         if config is None:
@@ -102,9 +122,19 @@ def cli_entry():
         except FileNotFoundError:
             pass  # not on macOS — skip silently
 
+        # IPC listener
+        listener = None
+        if not args.no_ipc:
+            try:
+                listener = MessageListener(args.socket_path)
+            except OSError as e:
+                print(f"Warning: IPC disabled ({e})", file=sys.stderr)
+
         try:
-            curses.wrapper(lambda stdscr: main(stdscr, config))
+            curses.wrapper(lambda stdscr: main(stdscr, config, listener))
         finally:
+            if listener is not None:
+                listener.close()
             if caffeinate is not None:
                 caffeinate.terminate()
                 caffeinate.wait()

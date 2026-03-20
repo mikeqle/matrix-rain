@@ -59,7 +59,7 @@ def config_from_args(args: argparse.Namespace) -> dict | None:
 
     # If no flags were given at all, fall back to interactive
     has_flags = any(v is not None for k, v in vars(args).items()
-                    if k not in ("interactive",))
+                    if k not in ("interactive", "no_ipc", "send", "socket_path"))
     if not has_flags:
         return None
 

@@ -20,22 +20,23 @@ class MessageListener:
     def _bind(self):
         # Clean up stale socket from a previous crash
         if os.path.exists(self.socket_path):
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
             try:
-                probe = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
                 probe.sendto(b"", self.socket_path)
-                probe.close()
-                # Socket is live — another instance is running
-                raise OSError(
-                    f"Another matrix-rain instance is listening at {self.socket_path}"
-                )
-            except ConnectionRefusedError:
-                os.unlink(self.socket_path)
-            except OSError:
-                # Can't connect — assume stale
+            except (ConnectionRefusedError, OSError):
+                # Can't connect — socket is stale, safe to replace
                 try:
                     os.unlink(self.socket_path)
                 except FileNotFoundError:
                     pass
+            else:
+                # sendto succeeded — another instance is actively listening
+                probe.close()
+                raise OSError(
+                    f"Another matrix-rain instance is listening at {self.socket_path}"
+                )
+            finally:
+                probe.close()
 
         self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         self._sock.setblocking(False)

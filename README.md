@@ -60,6 +60,9 @@ python -m matrix_rain --speed 2.0 --density 1.5 --fps 30 --trail-min 0.2 --trail
 | `--trail-min`   | Min trail length (fraction of height)    | 0.25    |
 | `--trail-max`   | Max trail length (fraction of height)    | 1.0     |
 | `--message`     | Text to reveal when `t` is pressed       | —       |
+| `--send`        | Send a message to a running instance     | —       |
+| `--socket-path` | Override IPC socket path                 | auto    |
+| `--no-ipc`      | Disable the IPC listener                 | off     |
 | `-i`            | Force interactive menu                   | —       |
 
 ### Presets
@@ -73,6 +76,22 @@ python -m matrix_rain --speed 2.0 --density 1.5 --fps 30 --trail-min 0.2 --trail
 | `storm`   | 2.0   | 2.0     | 30  | Fast and heavy               |
 
 Press **q** or **ESC** to quit while running. Press **t** to trigger text reveal (requires `--message`).
+
+### Receiving Messages from Other Applications
+
+While the rain is running, you can send messages from another terminal:
+
+```bash
+# Send a message to a running instance
+matrix-rain --send "WAKE UP NEO"
+
+# Or with python -m
+python -m matrix_rain --send "FOLLOW THE WHITE RABBIT"
+```
+
+The running instance automatically reveals the message using the text reveal animation. Sending a new message during an active reveal interrupts and restarts with the new text.
+
+The IPC uses a Unix datagram socket at `/tmp/matrix-rain-{uid}.sock`. Override with `--socket-path` or disable with `--no-ipc`.
 
 ## Installing to PATH
 

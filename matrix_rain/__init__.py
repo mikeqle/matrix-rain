@@ -20,6 +20,7 @@ from .constants import (
     SYMBOLS,
 )
 from .engine import MatrixRain
+from .ipc import MessageListener, default_socket_path, send_message
 from .stream import Stream
 
 # Backwards-compatible aliases for the old underscore-prefixed names

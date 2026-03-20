@@ -132,6 +132,10 @@ def cli_entry():
             try:
                 listener = MessageListener(args.socket_path)
             except OSError as e:
+                if args.socket_path is not None:
+                    print(f"Error: cannot bind to {args.socket_path}: {e}",
+                          file=sys.stderr)
+                    sys.exit(1)
                 print(f"Warning: IPC disabled ({e})", file=sys.stderr)
 
         try:

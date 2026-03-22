@@ -1,6 +1,14 @@
 """Matrix Digital Rain — Terminal Effect."""
 
-from .cli import cli_entry, config_from_args, main, parse_args
+from .cli import cli_entry, config_from_args, handle_config_command, main, parse_args
+from .config import (
+    config_path,
+    format_config,
+    load_config,
+    reset_config,
+    resolve_config,
+    save_config,
+)
 from .constants import (
     BLOCK_FONT,
     CHARSET,

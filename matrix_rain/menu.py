@@ -3,8 +3,11 @@ import time
 from .constants import COLOR_NAMES, PRESETS
 
 
-def interactive_menu() -> dict:
-    """Show a terminal menu and return a config dict."""
+def interactive_menu(defaults: dict | None = None) -> dict:
+    """Show a terminal menu and return a config dict.
+
+    *defaults* seeds the prompt defaults.  When ``None``, the classic
+    preset is used."""
 
     def ask_float(prompt: str, default: float, lo: float, hi: float) -> float:
         while True:
@@ -46,28 +49,46 @@ def interactive_menu() -> dict:
     print("  ╚══════════════════════════════════════╝")
     print()
 
+    # Seed from caller-supplied defaults (e.g. saved config) or classic.
+    if defaults is None:
+        defaults = dict(PRESETS["classic"])
+
     # Preset or custom?
     preset_names = list(PRESETS.keys()) + ["custom"]
-    choice = ask_choice("Preset", preset_names, "classic")
+    default_preset = defaults.get("preset", "classic")
+    if default_preset not in preset_names:
+        default_preset = "classic"
+    choice = ask_choice("Preset", preset_names, default_preset)
 
     if choice != "custom":
-        config = dict(PRESETS[choice])
+        if choice == default_preset:
+            # User accepted the saved preset — keep saved overrides.
+            config = dict(defaults)
+        else:
+            # User switched to a different preset — re-base, but carry
+            # over non-preset keys from defaults (e.g. message).
+            config = dict(defaults)
+            config.update(PRESETS[choice])
         print(f"\n  Using preset '{choice}'. Press Enter to accept defaults or type a new value.\n")
     else:
-        config = dict(PRESETS["classic"])
+        config = dict(defaults)
         print()
 
-    config["speed"] = ask_float("Speed (0.1 – 4.0)", config["speed"], 0.1, 4.0)
-    config["density"] = ask_float("Density (0.1 – 3.0)", config["density"], 0.1, 3.0)
-    config["fps"] = int(ask_float("FPS (10 – 60)", config["fps"], 10, 60))
+    config["speed"] = ask_float("Speed (0.1 – 4.0)", config.get("speed", 1.0), 0.1, 4.0)
+    config["density"] = ask_float("Density (0.1 – 3.0)", config.get("density", 0.7), 0.1, 3.0)
+    config["fps"] = int(ask_float("FPS (10 – 60)", config.get("fps", 24), 10, 60))
 
     if not config.get("rainbow"):
-        config["color"] = ask_choice("Color", COLOR_NAMES, config["color"])
+        config["color"] = ask_choice("Color", COLOR_NAMES, config.get("color", "green"))
     config["rainbow"] = ask_bool("Rainbow mode", config.get("rainbow", False))
 
-    msg = input("  Reveal message (press 't' to show) []: ").strip()
+    default_msg = config.get("message", "")
+    msg_prompt = f"  Reveal message (press 't' to show) [{default_msg}]: " if default_msg else "  Reveal message (press 't' to show) []: "
+    msg = input(msg_prompt).strip()
     if msg:
         config["message"] = msg
+    elif default_msg and not msg:
+        config["message"] = default_msg
 
     print()
     print("  Starting… press 'q' or ESC to quit.")

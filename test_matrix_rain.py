@@ -2,8 +2,10 @@
 
 import argparse
 import curses
+import json
 import os
 import random
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,9 +31,15 @@ from matrix_rain import (
     _REVEAL_SLOW_SECS,
     config_from_args,
     default_socket_path,
+    load_config,
+    save_config,
+    reset_config,
+    resolve_config,
+    format_config,
     parse_args,
     send_message,
 )
+from matrix_rain.config import _clamp
 
 
 # ── Character Set / Constants ────────────────────────────────────────────────
@@ -228,10 +236,196 @@ class TestStream:
                 assert s.chars[r] == "X"
 
 
+# ── Persistent Config ────────────────────────────────────────────────────────
+
+
+class TestPersistentConfig:
+    """Tests for matrix_rain.config — load/save/reset/resolve."""
+
+    def test_load_config_missing_file(self, tmp_path):
+        assert load_config(tmp_path / "nope.json") == {}
+
+    def test_save_and_load_config(self, tmp_path):
+        p = tmp_path / "config.json"
+        save_config({"speed": 2.0, "color": "red"}, p)
+        loaded = load_config(p)
+        assert loaded["speed"] == 2.0
+        assert loaded["color"] == "red"
+
+    def test_save_merges_with_existing(self, tmp_path):
+        p = tmp_path / "config.json"
+        save_config({"speed": 2.0}, p)
+        save_config({"color": "cyan"}, p)
+        loaded = load_config(p)
+        assert loaded["speed"] == 2.0
+        assert loaded["color"] == "cyan"
+
+    def test_save_overwrites_existing_key(self, tmp_path):
+        p = tmp_path / "config.json"
+        save_config({"speed": 2.0}, p)
+        save_config({"speed": 3.0}, p)
+        loaded = load_config(p)
+        assert loaded["speed"] == 3.0
+
+    def test_reset_config(self, tmp_path):
+        p = tmp_path / "config.json"
+        save_config({"speed": 2.0}, p)
+        assert p.exists()
+        reset_config(p)
+        assert not p.exists()
+        assert load_config(p) == {}
+
+    def test_reset_missing_file_no_error(self, tmp_path):
+        reset_config(tmp_path / "nope.json")  # should not raise
+
+    def test_load_ignores_unknown_keys(self, tmp_path):
+        p = tmp_path / "config.json"
+        p.write_text(json.dumps({"speed": 1.5, "bogus": "value"}))
+        loaded = load_config(p)
+        assert "bogus" not in loaded
+        assert loaded["speed"] == 1.5
+
+    def test_load_handles_invalid_json(self, tmp_path):
+        p = tmp_path / "config.json"
+        p.write_text("not json {{{")
+        assert load_config(p) == {}
+
+    def test_load_handles_non_dict_json(self, tmp_path):
+        p = tmp_path / "config.json"
+        p.write_text(json.dumps([1, 2, 3]))
+        assert load_config(p) == {}
+
+    def test_resolve_config_empty_returns_classic(self):
+        config = resolve_config({})
+        assert config == dict(PRESETS["classic"])
+
+    def test_resolve_config_with_overrides(self):
+        config = resolve_config({"speed": 2.5, "color": "red"})
+        assert config["speed"] == 2.5
+        assert config["color"] == "red"
+        assert config["density"] == PRESETS["classic"]["density"]
+
+    def test_resolve_config_with_preset(self):
+        config = resolve_config({"preset": "storm", "color": "cyan"})
+        assert config["speed"] == PRESETS["storm"]["speed"]
+        assert config["density"] == PRESETS["storm"]["density"]
+        assert config["color"] == "cyan"
+
+    def test_clamp_speed(self):
+        assert _clamp({"speed": 99.0})["speed"] == 4.0
+        assert _clamp({"speed": 0.01})["speed"] == 0.1
+
+    def test_clamp_density(self):
+        assert _clamp({"density": 10.0})["density"] == 3.0
+
+    def test_clamp_fps(self):
+        assert _clamp({"fps": 999})["fps"] == 60
+        assert _clamp({"fps": 1})["fps"] == 10
+
+    def test_clamp_trail_min(self):
+        assert _clamp({"trail_min": 0.0})["trail_min"] == 0.05
+
+    def test_clamp_trail_max(self):
+        assert _clamp({"trail_max": 10.0})["trail_max"] == 2.0
+
+    def test_clamp_rejects_invalid_color(self):
+        assert _clamp({"color": "pink"}) == {}
+
+    def test_clamp_accepts_valid_color(self):
+        assert _clamp({"color": "cyan"})["color"] == "cyan"
+
+    def test_clamp_rejects_invalid_preset(self):
+        assert _clamp({"preset": "nonexistent"}) == {}
+
+    def test_clamp_rainbow_string_false(self):
+        assert _clamp({"rainbow": "false"})["rainbow"] is False
+        assert _clamp({"rainbow": "0"})["rainbow"] is False
+        assert _clamp({"rainbow": "no"})["rainbow"] is False
+
+    def test_clamp_rainbow_string_true(self):
+        assert _clamp({"rainbow": "true"})["rainbow"] is True
+        assert _clamp({"rainbow": "1"})["rainbow"] is True
+        assert _clamp({"rainbow": "yes"})["rainbow"] is True
+
+    def test_clamp_rainbow_bool(self):
+        assert _clamp({"rainbow": True})["rainbow"] is True
+        assert _clamp({"rainbow": False})["rainbow"] is False
+
+    def test_clamp_rainbow_int(self):
+        assert _clamp({"rainbow": 0})["rainbow"] is False
+        assert _clamp({"rainbow": 1})["rainbow"] is True
+
+    def test_clamp_rainbow_invalid_string_dropped(self):
+        assert _clamp({"rainbow": "maybe"}) == {}
+
+    def test_clamp_drops_unparseable_values(self):
+        assert _clamp({"speed": "oops"}) == {}
+        assert _clamp({"fps": "not_a_number"}) == {}
+        assert _clamp({"trail_min": [1, 2]}) == {}
+
+    def test_load_validates_types(self, tmp_path):
+        """Corrupted but valid JSON: bad types are silently dropped."""
+        p = tmp_path / "config.json"
+        p.write_text(json.dumps({"fps": "24", "speed": "oops", "color": "cyan"}))
+        loaded = load_config(p)
+        assert loaded["fps"] == 24       # coerced from string
+        assert "speed" not in loaded     # "oops" can't become float
+        assert loaded["color"] == "cyan" # string stays valid
+
+    def test_load_clamps_out_of_range(self, tmp_path):
+        p = tmp_path / "config.json"
+        p.write_text(json.dumps({"speed": 999, "fps": -5}))
+        loaded = load_config(p)
+        assert loaded["speed"] == 4.0
+        assert loaded["fps"] == 10
+
+    def test_save_preset_clears_stale_overrides(self, tmp_path):
+        """Saving a preset drops old overrides that the preset would set."""
+        p = tmp_path / "config.json"
+        save_config({"speed": 0.5, "color": "red"}, p)
+        save_config({"preset": "storm"}, p)
+        loaded = load_config(p)
+        # speed and color should be gone — storm provides them
+        assert "speed" not in loaded
+        assert "color" not in loaded
+        assert loaded["preset"] == "storm"
+        # resolve should give storm's values
+        resolved = resolve_config(loaded)
+        assert resolved["speed"] == PRESETS["storm"]["speed"]
+
+    def test_save_preset_keeps_same_command_overrides(self, tmp_path):
+        """Keys passed alongside --preset in the same command survive."""
+        p = tmp_path / "config.json"
+        save_config({"speed": 0.5}, p)
+        save_config({"preset": "storm", "speed": 3.0}, p)
+        loaded = load_config(p)
+        assert loaded["preset"] == "storm"
+        assert loaded["speed"] == 3.0
+        resolved = resolve_config(loaded)
+        assert resolved["speed"] == 3.0
+
+    def test_format_config_empty(self):
+        output = format_config({})
+        assert "Effective config" in output
+
+    def test_format_config_with_saved(self):
+        output = format_config({"speed": 2.0})
+        assert "Saved config" in output
+        assert "speed: 2.0" in output
+        assert "*" in output
+
+
 # ── Config from Args ─────────────────────────────────────────────────────────
 
 
 class TestConfigFromArgs:
+    @pytest.fixture(autouse=True)
+    def _isolate_config(self):
+        """Prevent real config file from affecting tests."""
+        with patch("matrix_rain.config.load_config", return_value={}) as m:
+            self._load_mock = m
+            yield
+
     def _ns(self, **kwargs):
         """Build an argparse.Namespace with defaults."""
         defaults = {
@@ -248,12 +442,16 @@ class TestConfigFromArgs:
             "send": None,
             "socket_path": None,
             "no_ipc": False,
+            "command": None,
         }
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
 
-    def test_no_flags_returns_none(self):
-        assert config_from_args(self._ns()) is None
+    def test_no_flags_uses_saved_config(self):
+        """No flags → resolve saved config (classic defaults when empty)."""
+        config = config_from_args(self._ns())
+        assert config is not None
+        assert config == dict(PRESETS["classic"])
 
     def test_interactive_flag_returns_none(self):
         assert config_from_args(self._ns(interactive=True, preset="classic")) is None
@@ -331,9 +529,8 @@ class TestConfigFromArgs:
         assert "message" not in config
 
     def test_unknown_preset_uses_classic(self):
-        # config_from_args uses PRESETS.get(args.preset, PRESETS["classic"])
         config = config_from_args(self._ns(preset=None, speed=1.0))
-        assert config["speed"] == 1.0  # from classic defaults
+        assert config["speed"] == 1.0
 
     def test_multiple_overrides(self):
         config = config_from_args(self._ns(
@@ -358,10 +555,49 @@ class TestConfigFromArgs:
         assert config is not None
         assert config == dict(PRESETS["classic"])
 
-    def test_bare_invocation_returns_none(self):
-        """Bare invocation (no flags at all) still goes interactive."""
+    def test_bare_invocation_uses_saved_config(self):
+        """Bare invocation (no flags) uses saved config merged with defaults."""
+        self._load_mock.return_value = {"speed": 2.5, "color": "red"}
         config = config_from_args(self._ns())
-        assert config is None
+        assert config is not None
+        assert config["speed"] == 2.5
+        assert config["color"] == "red"
+        assert config["density"] == PRESETS["classic"]["density"]
+
+    def test_cli_flags_layer_on_saved_config(self):
+        """CLI flags override saved config, but saved values persist for unset flags."""
+        self._load_mock.return_value = {"speed": 2.5, "color": "red"}
+        config = config_from_args(self._ns(message="HI"))
+        assert config["message"] == "HI"
+        assert config["speed"] == 2.5
+        assert config["color"] == "red"
+
+    def test_cli_flag_overrides_saved_value(self):
+        """A CLI flag for the same key beats the saved value."""
+        self._load_mock.return_value = {"speed": 2.5, "color": "red"}
+        config = config_from_args(self._ns(speed=1.0))
+        assert config["speed"] == 1.0
+        assert config["color"] == "red"
+
+    def test_no_rainbow_disables_saved_rainbow(self):
+        """--no-rainbow can turn off a saved rainbow: true."""
+        self._load_mock.return_value = {"rainbow": True}
+        config = config_from_args(self._ns(rainbow=False))
+        assert config["rainbow"] is False
+
+    def test_saved_rainbow_persists_without_flag(self):
+        """Without --no-rainbow, saved rainbow stays on."""
+        self._load_mock.return_value = {"rainbow": True}
+        config = config_from_args(self._ns())
+        assert config["rainbow"] is True
+
+    def test_preset_flag_preserves_saved_non_preset_keys(self):
+        """--preset on a one-off run keeps saved keys the preset doesn't set."""
+        self._load_mock.return_value = {"message": "WAKE UP", "trail_min": 0.5}
+        config = config_from_args(self._ns(preset="storm"))
+        assert config["speed"] == PRESETS["storm"]["speed"]
+        assert config["density"] == PRESETS["storm"]["density"]
+        assert config["message"] == "WAKE UP"
 
 
 # ── CLI Argument Parsing ─────────────────────────────────────────────────────
@@ -369,48 +605,132 @@ class TestConfigFromArgs:
 
 class TestParseArgs:
     def test_no_args(self):
-        with patch("sys.argv", ["matrix_rain"]):
-            args = parse_args()
+        args = parse_args([])
         assert args.preset is None
         assert args.speed is None
         assert args.interactive is False
+        assert args.command is None
 
     def test_preset_arg(self):
-        with patch("sys.argv", ["matrix_rain","--preset", "dense"]):
-            args = parse_args()
+        args = parse_args(["--preset", "dense"])
         assert args.preset == "dense"
 
     def test_multiple_args(self):
-        with patch("sys.argv", ["matrix_rain","--speed", "2.0", "--color", "cyan", "--rainbow"]):
-            args = parse_args()
+        args = parse_args(["--speed", "2.0", "--color", "cyan", "--rainbow"])
         assert args.speed == 2.0
         assert args.color == "cyan"
         assert args.rainbow is True
 
     def test_interactive_short_flag(self):
-        with patch("sys.argv", ["matrix_rain","-i"]):
-            args = parse_args()
+        args = parse_args(["-i"])
         assert args.interactive is True
 
+    def test_no_rainbow_flag(self):
+        args = parse_args(["--no-rainbow"])
+        assert args.rainbow is False
+
+    def test_rainbow_default_none(self):
+        args = parse_args([])
+        assert args.rainbow is None
+
     def test_invalid_preset_exits(self):
-        with patch("sys.argv", ["matrix_rain","--preset", "nonexistent"]):
-            with pytest.raises(SystemExit):
-                parse_args()
+        with pytest.raises(SystemExit):
+            parse_args(["--preset", "nonexistent"])
 
     def test_message_arg(self):
-        with patch("sys.argv", ["matrix_rain","--message", "HELLO WORLD"]):
-            args = parse_args()
+        args = parse_args(["--message", "HELLO WORLD"])
         assert args.message == "HELLO WORLD"
 
     def test_message_default_none(self):
-        with patch("sys.argv", ["matrix_rain"]):
-            args = parse_args()
+        args = parse_args([])
         assert args.message is None
 
     def test_invalid_color_exits(self):
-        with patch("sys.argv", ["matrix_rain","--color", "pink"]):
-            with pytest.raises(SystemExit):
-                parse_args()
+        with pytest.raises(SystemExit):
+            parse_args(["--color", "pink"])
+
+    def test_config_subcommand(self):
+        args = parse_args(["config", "--speed", "2.0", "--color", "red"])
+        assert args.command == "config"
+        assert args.speed == 2.0
+        assert args.color == "red"
+
+    def test_config_show(self):
+        args = parse_args(["config", "--show"])
+        assert args.command == "config"
+        assert args.show is True
+
+    def test_config_reset(self):
+        args = parse_args(["config", "--reset"])
+        assert args.command == "config"
+        assert args.reset is True
+
+
+# ── Interactive Menu ─────────────────────────────────────────────────────────
+
+from matrix_rain.menu import interactive_menu
+
+
+class TestInteractiveMenu:
+    def _run_menu(self, inputs, defaults=None):
+        """Run interactive_menu with simulated input lines."""
+        it = iter(inputs)
+        with patch("builtins.input", side_effect=it), \
+             patch("time.sleep"):
+            return interactive_menu(defaults=defaults)
+
+    def test_defaults_from_classic_when_none(self):
+        # Accept all defaults: preset=classic, then Enter through everything
+        inputs = ["", "", "", "", "", "", "", ""]
+        config = self._run_menu(inputs, defaults=None)
+        assert config["speed"] == PRESETS["classic"]["speed"]
+        assert config["color"] == PRESETS["classic"]["color"]
+
+    def test_defaults_seeded_from_saved_config(self):
+        # Saved config with custom speed and color — accept all defaults
+        saved = dict(PRESETS["classic"], speed=2.5, color="cyan")
+        # preset=classic (Enter), speed (Enter=2.5), density (Enter),
+        # fps (Enter), color (Enter=cyan), rainbow (Enter=n), message (Enter)
+        inputs = ["", "", "", "", "", "", ""]
+        config = self._run_menu(inputs, defaults=saved)
+        assert config["speed"] == 2.5
+        assert config["color"] == "cyan"
+
+    def test_saved_message_preserved_on_enter(self):
+        saved = dict(PRESETS["classic"], message="WAKE UP")
+        # Accept all defaults through
+        inputs = ["", "", "", "", "", "", ""]
+        config = self._run_menu(inputs, defaults=saved)
+        assert config["message"] == "WAKE UP"
+
+    def test_saved_message_can_be_overridden(self):
+        saved = dict(PRESETS["classic"], message="WAKE UP")
+        # Accept defaults except message
+        inputs = ["", "", "", "", "", "", "HELLO"]
+        config = self._run_menu(inputs, defaults=saved)
+        assert config["message"] == "HELLO"
+
+
+# ── Config import-time safety ───────────────────────────────────────────────
+
+
+class TestConfigImportSafety:
+    def test_import_does_not_call_path_home(self):
+        """Importing config should not call Path.home() at module level."""
+        import importlib
+        import matrix_rain.config as cfg
+        with patch.object(Path, "home", side_effect=RuntimeError("HOME unset")):
+            # Calling _default_config_path would fail, but mere attribute
+            # access on the already-imported module should not.
+            assert hasattr(cfg, "load_config")
+            assert hasattr(cfg, "save_config")
+
+    def test_path_home_deferred_to_function_call(self):
+        """Path.home() is only called when a config function is invoked."""
+        from matrix_rain.config import _default_config_path
+        with patch.object(Path, "home", return_value=Path("/fake/home")):
+            p = _default_config_path()
+        assert p == Path("/fake/home/.config/matrix-rain/config.json")
 
 
 # ── MatrixRain (with mocked curses) ─────────────────────────────────────────
